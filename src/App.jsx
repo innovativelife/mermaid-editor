@@ -287,7 +287,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="app-brand">
-          <img src="/icon.svg" alt="" className="app-logo" />
+          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="app-logo" />
           <h1>Mermaid Diagram Editor{diagramName ? ` — ${diagramName}` : ''}</h1>
         </div>
         <div className="header-controls">
