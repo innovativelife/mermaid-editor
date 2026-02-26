@@ -25,13 +25,34 @@ function shapeWrap(label, shape) {
   }
 }
 
-export function generateMermaid(nodes, edges, direction = 'TD', type = 'flowchart') {
+export function generateMermaid(nodes, edges, direction = 'TD', type = 'flowchart', containers = []) {
   if (nodes.length === 0) return ''
 
   const lines = [`${type} ${direction}`]
 
+  // Build set of node IDs that belong to a container
+  const containedNodeIds = new Set()
+  for (const c of containers) {
+    for (const node of nodes) {
+      if (node.containerId === c.id) containedNodeIds.add(node.id)
+    }
+  }
+
+  // Emit containers as subgraph blocks with their contained nodes
+  for (const c of containers) {
+    const containedNodes = nodes.filter(n => n.containerId === c.id)
+    lines.push(`    subgraph ${c.id} [${c.label}]`)
+    for (const node of containedNodes) {
+      lines.push(`        ${node.id}${shapeWrap(node.label, node.shape)}`)
+    }
+    lines.push(`    end`)
+  }
+
+  // Emit non-contained nodes
   for (const node of nodes) {
-    lines.push(`    ${node.id}${shapeWrap(node.label, node.shape)}`)
+    if (!containedNodeIds.has(node.id)) {
+      lines.push(`    ${node.id}${shapeWrap(node.label, node.shape)}`)
+    }
   }
 
   for (const edge of edges) {

@@ -456,6 +456,64 @@ g:hover .port-handle,
   transition: opacity 0.15s;
 }
 
+/* Container styles */
+.container-shape {
+  cursor: grab;
+  transition: stroke 0.15s, stroke-width 0.15s;
+}
+
+.container-shape.selected {
+  stroke: #60a5fa;
+}
+
+.container-label {
+  font-size: 11px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  user-select: none;
+  pointer-events: none;
+}
+
+.container-resize-handle {
+  fill: #60a5fa;
+  stroke: #fff;
+  stroke-width: 1;
+  rx: 1;
+  ry: 1;
+}
+
+.container-resize-handle:hover {
+  fill: #3b82f6;
+}
+
+/* Add Container button */
+.btn-container {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.btn-container:hover {
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+.btn-container.active {
+  border-color: var(--primary);
+  background: rgba(96, 165, 250, 0.1);
+  color: var(--primary);
+  border-style: solid;
+}
+
 /* Mermaid Panel */
 .mermaid-panel {
   width: 320px;

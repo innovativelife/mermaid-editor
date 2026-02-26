@@ -7,6 +7,7 @@ import './App.css'
 
 let nextNodeId = 1
 let nextEdgeId = 1
+let nextContainerId = 1
 
 const LS_KEY = 'mde-saved-diagrams'
 
@@ -16,22 +17,27 @@ function getSavedList() {
   } catch { return {} }
 }
 
-function serializeDiagram(nodes, edges, direction, type) {
-  return JSON.stringify({ version: 1, nodes, edges, direction, type }, null, 2)
+function serializeDiagram(nodes, edges, containers, direction, type) {
+  return JSON.stringify({ version: 2, nodes, edges, containers, direction, type }, null, 2)
 }
 
 function deserializeDiagram(json) {
   const data = typeof json === 'string' ? JSON.parse(json) : json
   if (!data.nodes || !data.edges) throw new Error('Invalid diagram file')
+  // v1 backward compat: default containers to []
+  if (!data.containers) data.containers = []
   return data
 }
 
 export default function App() {
   const [nodes, setNodes] = useState([])
   const [edges, setEdges] = useState([])
+  const [containers, setContainers] = useState([])
   const [selectedNode, setSelectedNode] = useState(null)
   const [selectedEdge, setSelectedEdge] = useState(null)
+  const [selectedContainer, setSelectedContainer] = useState(null)
   const [connectingFrom, setConnectingFrom] = useState(null)
+  const [creatingContainer, setCreatingContainer] = useState(false)
   const [diagramDirection, setDiagramDirection] = useState('TD')
   const [diagramType, setDiagramType] = useState('flowchart')
   const [showPreview, setShowPreview] = useState(false)
@@ -53,11 +59,14 @@ export default function App() {
     const d = deserializeDiagram(data)
     setNodes(d.nodes)
     setEdges(d.edges)
+    setContainers(d.containers)
     if (d.direction) setDiagramDirection(d.direction)
     if (d.type) setDiagramType(d.type)
     setSelectedNode(null)
     setSelectedEdge(null)
+    setSelectedContainer(null)
     setConnectingFrom(null)
+    setCreatingContainer(false)
     // Reset ID counters past the highest existing IDs
     const maxN = d.nodes.reduce((m, n) => {
       const num = parseInt(n.id.replace(/\D/g, '')) || 0
@@ -67,8 +76,39 @@ export default function App() {
       const num = parseInt(e.id.replace(/\D/g, '')) || 0
       return Math.max(m, num)
     }, 0)
+    const maxC = d.containers.reduce((m, c) => {
+      const num = parseInt(c.id.replace(/\D/g, '')) || 0
+      return Math.max(m, num)
+    }, 0)
     nextNodeId = maxN + 1
     nextEdgeId = maxE + 1
+    nextContainerId = maxC + 1
+  }, [])
+
+  // ── Three-way mutual exclusion for selection ──────────────
+  const selectNode = useCallback((id) => {
+    setSelectedNode(id)
+    setSelectedEdge(null)
+    setSelectedContainer(null)
+  }, [])
+
+  const selectEdge = useCallback((id) => {
+    setSelectedEdge(id)
+    setSelectedNode(null)
+    setSelectedContainer(null)
+  }, [])
+
+  const selectContainer = useCallback((id) => {
+    setSelectedContainer(id)
+    setSelectedNode(null)
+    setSelectedEdge(null)
+  }, [])
+
+  const deselectAll = useCallback(() => {
+    setSelectedNode(null)
+    setSelectedEdge(null)
+    setSelectedContainer(null)
+    setConnectingFrom(null)
   }, [])
 
   const addNode = useCallback((x, y) => {
@@ -85,10 +125,10 @@ export default function App() {
       fillColor: null,
       borderColor: null,
       borderWidth: 'medium',
+      containerId: null,
     }])
-    setSelectedNode(id)
-    setSelectedEdge(null)
-  }, [])
+    selectNode(id)
+  }, [selectNode])
 
   const updateNode = useCallback((id, updates) => {
     setNodes(prev => prev.map(n => n.id === id ? { ...n, ...updates } : n))
@@ -104,9 +144,8 @@ export default function App() {
     if (from === to) return
     const id = `E${nextEdgeId++}`
     setEdges(prev => [...prev, { id, from, to, label: '', fromPort: null, toPort: null }])
-    setSelectedEdge(id)
-    setSelectedNode(null)
-  }, [])
+    selectEdge(id)
+  }, [selectEdge])
 
   const updateEdge = useCallback((id, updates) => {
     setEdges(prev => prev.map(e => e.id === id ? { ...e, ...updates } : e))
@@ -117,16 +156,49 @@ export default function App() {
     setSelectedEdge(null)
   }, [])
 
+  // ── Container CRUD ──────────────────────────────────────
+  const addContainer = useCallback((x, y, width, height) => {
+    const id = `C${nextContainerId++}`
+    setContainers(prev => [...prev, {
+      id,
+      label: 'Group',
+      x,
+      y,
+      width,
+      height,
+      textPosition: 'top',
+      fillColor: null,
+      borderColor: null,
+      borderWidth: 'medium',
+    }])
+    selectContainer(id)
+  }, [selectContainer])
+
+  const updateContainer = useCallback((id, updates) => {
+    setContainers(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c))
+  }, [])
+
+  const deleteContainer = useCallback((id) => {
+    // Clear containerId from nodes that were inside this container
+    setNodes(prev => prev.map(n => n.containerId === id ? { ...n, containerId: null } : n))
+    setContainers(prev => prev.filter(c => c.id !== id))
+    setSelectedContainer(null)
+  }, [])
+
   const clearAll = useCallback(() => {
     setNodes([])
     setEdges([])
+    setContainers([])
     setSelectedNode(null)
     setSelectedEdge(null)
+    setSelectedContainer(null)
     setConnectingFrom(null)
+    setCreatingContainer(false)
     setDiagramName('')
     setDirty(false)
     nextNodeId = 1
     nextEdgeId = 1
+    nextContainerId = 1
   }, [])
 
   useEffect(() => {
@@ -137,8 +209,8 @@ export default function App() {
 
   // Mark dirty when diagram content changes
   useEffect(() => {
-    if (nodes.length > 0 || edges.length > 0) setDirty(true)
-  }, [nodes, edges])
+    if (nodes.length > 0 || edges.length > 0 || containers.length > 0) setDirty(true)
+  }, [nodes, edges, containers])
 
   // Warn on refresh/close with unsaved work
   useEffect(() => {
@@ -166,7 +238,7 @@ export default function App() {
     if (!diagramName) return false
     const saved = getSavedList()
     saved[diagramName] = {
-      data: serializeDiagram(nodes, edges, diagramDirection, diagramType),
+      data: serializeDiagram(nodes, edges, containers, diagramDirection, diagramType),
       date: new Date().toISOString(),
     }
     localStorage.setItem(LS_KEY, JSON.stringify(saved))
@@ -206,7 +278,7 @@ export default function App() {
     const name = saveName.trim()
     const saved = getSavedList()
     saved[name] = {
-      data: serializeDiagram(nodes, edges, diagramDirection, diagramType),
+      data: serializeDiagram(nodes, edges, containers, diagramDirection, diagramType),
       date: new Date().toISOString(),
     }
     localStorage.setItem(LS_KEY, JSON.stringify(saved))
@@ -246,7 +318,7 @@ export default function App() {
 
   // ── Export to .mde file ──────────────────────────────────
   const handleExport = () => {
-    const json = serializeDiagram(nodes, edges, diagramDirection, diagramType)
+    const json = serializeDiagram(nodes, edges, containers, diagramDirection, diagramType)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -281,7 +353,7 @@ export default function App() {
     e.target.value = ''
   }
 
-  const mermaidCode = generateMermaid(nodes, edges, diagramDirection, diagramType)
+  const mermaidCode = generateMermaid(nodes, edges, diagramDirection, diagramType, containers)
 
   return (
     <div className="app">
@@ -416,25 +488,37 @@ export default function App() {
         <Toolbar
           selectedNode={selectedNode ? nodes.find(n => n.id === selectedNode) : null}
           selectedEdge={selectedEdge ? edges.find(e => e.id === selectedEdge) : null}
+          selectedContainer={selectedContainer ? containers.find(c => c.id === selectedContainer) : null}
           onUpdateNode={(updates) => updateNode(selectedNode, updates)}
           onDeleteNode={() => deleteNode(selectedNode)}
           onUpdateEdge={(updates) => updateEdge(selectedEdge, updates)}
           onDeleteEdge={() => deleteEdge(selectedEdge)}
+          onUpdateContainer={(updates) => updateContainer(selectedContainer, updates)}
+          onDeleteContainer={() => deleteContainer(selectedContainer)}
           connectingFrom={connectingFrom}
           onCancelConnect={() => setConnectingFrom(null)}
+          creatingContainer={creatingContainer}
+          onToggleCreatingContainer={() => setCreatingContainer(prev => !prev)}
         />
         <DiagramCanvas
           nodes={nodes}
           edges={edges}
+          containers={containers}
           selectedNode={selectedNode}
           selectedEdge={selectedEdge}
+          selectedContainer={selectedContainer}
           connectingFrom={connectingFrom}
-          onSelectNode={(id) => { setSelectedNode(id); setSelectedEdge(null) }}
-          onSelectEdge={(id) => { setSelectedEdge(id); setSelectedNode(null) }}
-          onDeselectAll={() => { setSelectedNode(null); setSelectedEdge(null); setConnectingFrom(null) }}
+          creatingContainer={creatingContainer}
+          onSelectNode={selectNode}
+          onSelectEdge={selectEdge}
+          onSelectContainer={selectContainer}
+          onDeselectAll={deselectAll}
           onAddNode={addNode}
           onUpdateNode={updateNode}
           onUpdateEdge={updateEdge}
+          onAddContainer={addContainer}
+          onUpdateContainer={updateContainer}
+          onFinishCreatingContainer={() => setCreatingContainer(false)}
           onStartConnect={setConnectingFrom}
           onCompleteConnect={(toId) => {
             if (connectingFrom) {

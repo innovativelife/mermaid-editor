@@ -51,10 +51,17 @@ function getTextWidth(lines) {
   return max + TEXT_PAD * 2
 }
 
+// ── Container min dimensions ─────────────────────────────────
+const MIN_CONTAINER_W = 100
+const MIN_CONTAINER_H = 80
+
 export default function DiagramCanvas({
-  nodes, edges, selectedNode, selectedEdge, connectingFrom,
-  onSelectNode, onSelectEdge, onDeselectAll, onAddNode, onUpdateNode,
-  onUpdateEdge, onStartConnect, onCompleteConnect,
+  nodes, edges, containers, selectedNode, selectedEdge, selectedContainer,
+  connectingFrom, creatingContainer,
+  onSelectNode, onSelectEdge, onSelectContainer, onDeselectAll,
+  onAddNode, onUpdateNode, onUpdateEdge,
+  onAddContainer, onUpdateContainer, onFinishCreatingContainer,
+  onStartConnect, onCompleteConnect,
 }) {
   const svgRef = useRef(null)
   const [dragging, setDragging] = useState(null)
@@ -69,6 +76,18 @@ export default function DiagramCanvas({
   // Endpoint dragging state: { edgeId, which: 'from'|'to' }
   const [draggingEndpoint, setDraggingEndpoint] = useState(null)
   const [endpointPreview, setEndpointPreview] = useState(null) // { x, y, side, offset }
+
+  // Container creation drag state
+  const [containerDragStart, setContainerDragStart] = useState(null)
+  const [containerDragCurrent, setContainerDragCurrent] = useState(null)
+
+  // Container move state
+  const [draggingContainer, setDraggingContainer] = useState(null)
+  const [containerDragOffset, setContainerDragOffset] = useState({ x: 0, y: 0 })
+
+  // Container resize state: { containerId, handle }
+  const [resizingContainer, setResizingContainer] = useState(null)
+  const [resizeStart, setResizeStart] = useState(null) // { mouseX, mouseY, x, y, w, h }
 
   // During node drag, use lightweight routing (no crossing avoidance).
   // When drag ends (dragging === null), recompute with full crossing avoidance.
@@ -95,6 +114,19 @@ export default function DiagramCanvas({
     }
   }, [nodes, onUpdateNode])
 
+  // Escape key cancels container creation mode
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape' && creatingContainer) {
+        onFinishCreatingContainer()
+        setContainerDragStart(null)
+        setContainerDragCurrent(null)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [creatingContainer, onFinishCreatingContainer])
+
   const getSVGPoint = useCallback((e) => {
     const rect = svgRef.current.getBoundingClientRect()
     return {
@@ -115,6 +147,13 @@ export default function DiagramCanvas({
 
       const pt = getSVGPoint(e)
 
+      // Container creation mode: start drag
+      if (creatingContainer) {
+        setContainerDragStart(pt)
+        setContainerDragCurrent(pt)
+        return
+      }
+
       for (const edge of edges) {
         const pts = routes[edge.id]
         if (!pts || pts.length < 2) continue
@@ -132,14 +171,16 @@ export default function DiagramCanvas({
       }
       onDeselectAll()
     }
-  }, [edges, routes, isConnecting, getSVGPoint, onSelectEdge, onDeselectAll, panOffset])
+  }, [edges, routes, isConnecting, getSVGPoint, onSelectEdge, onDeselectAll, panOffset, creatingContainer])
 
   const handleCanvasDoubleClick = useCallback((e) => {
+    // Suppress double-click node creation while in container creation mode
+    if (creatingContainer) return
     if (e.target === svgRef.current || e.target.classList.contains('canvas-bg')) {
       const pt = getSVGPoint(e)
       onAddNode(pt.x - 70, pt.y - 25)
     }
-  }, [getSVGPoint, onAddNode])
+  }, [getSVGPoint, onAddNode, creatingContainer])
 
   const handleNodeMouseDown = useCallback((e, nodeId) => {
     e.stopPropagation()
@@ -166,6 +207,26 @@ export default function DiagramCanvas({
     })
   }, [onStartConnect, panOffset])
 
+  // ── Container mouse handlers ──────────────────────────────
+
+  const handleContainerMouseDown = useCallback((e, containerId) => {
+    e.stopPropagation()
+    if (creatingContainer) return
+    onSelectContainer(containerId)
+    const container = containers.find(c => c.id === containerId)
+    const pt = getSVGPoint(e)
+    setContainerDragOffset({ x: pt.x - container.x, y: pt.y - container.y })
+    setDraggingContainer(containerId)
+  }, [containers, getSVGPoint, onSelectContainer, creatingContainer])
+
+  const handleResizeMouseDown = useCallback((e, containerId, handle) => {
+    e.stopPropagation()
+    const container = containers.find(c => c.id === containerId)
+    const pt = getSVGPoint(e)
+    setResizingContainer({ containerId, handle })
+    setResizeStart({ mouseX: pt.x, mouseY: pt.y, x: container.x, y: container.y, w: container.width, h: container.height })
+  }, [containers, getSVGPoint])
+
   // ── Endpoint handle drag ─────────────────────────────────
 
   const handleEndpointMouseDown = useCallback((e, edgeId, which) => {
@@ -177,6 +238,54 @@ export default function DiagramCanvas({
   const handleMouseMove = useCallback((e) => {
     if (isPanning) {
       setPanOffset({ x: e.clientX - panStart.x, y: e.clientY - panStart.y })
+      return
+    }
+
+    // Container creation drag
+    if (containerDragStart && creatingContainer) {
+      const pt = getSVGPoint(e)
+      setContainerDragCurrent(pt)
+      return
+    }
+
+    // Container resize
+    if (resizingContainer && resizeStart) {
+      const pt = getSVGPoint(e)
+      const dx = pt.x - resizeStart.mouseX
+      const dy = pt.y - resizeStart.mouseY
+      const { handle } = resizingContainer
+      let { x, y, w, h } = resizeStart
+
+      if (handle.includes('l')) { x += dx; w -= dx }
+      if (handle.includes('r')) { w += dx }
+      if (handle.includes('t')) { y += dy; h -= dy }
+      if (handle.includes('b')) { h += dy }
+
+      // Enforce minimums
+      if (w < MIN_CONTAINER_W) { if (handle.includes('l')) x = resizeStart.x + resizeStart.w - MIN_CONTAINER_W; w = MIN_CONTAINER_W }
+      if (h < MIN_CONTAINER_H) { if (handle.includes('t')) y = resizeStart.y + resizeStart.h - MIN_CONTAINER_H; h = MIN_CONTAINER_H }
+
+      onUpdateContainer(resizingContainer.containerId, { x, y, width: w, height: h })
+      return
+    }
+
+    // Container move
+    if (draggingContainer) {
+      const pt = getSVGPoint(e)
+      const container = containers.find(c => c.id === draggingContainer)
+      if (container) {
+        const newX = pt.x - containerDragOffset.x
+        const newY = pt.y - containerDragOffset.y
+        const deltaX = newX - container.x
+        const deltaY = newY - container.y
+        onUpdateContainer(draggingContainer, { x: newX, y: newY })
+        // Move contained nodes by the same delta
+        for (const node of nodes) {
+          if (node.containerId === draggingContainer) {
+            onUpdateNode(node.id, { x: node.x + deltaX, y: node.y + deltaY })
+          }
+        }
+      }
       return
     }
 
@@ -210,9 +319,39 @@ export default function DiagramCanvas({
       })
     }
   }, [dragging, dragOffset, getSVGPoint, onUpdateNode, isPanning, panStart,
-      isConnecting, panOffset, draggingEndpoint, edges, nodes])
+      isConnecting, panOffset, draggingEndpoint, edges, nodes,
+      containerDragStart, creatingContainer, draggingContainer, containerDragOffset,
+      onUpdateContainer, containers, resizingContainer, resizeStart])
 
   const handleMouseUp = useCallback((e) => {
+    // Container creation: finalize
+    if (containerDragStart && containerDragCurrent && creatingContainer) {
+      const x = Math.min(containerDragStart.x, containerDragCurrent.x)
+      const y = Math.min(containerDragStart.y, containerDragCurrent.y)
+      const w = Math.abs(containerDragCurrent.x - containerDragStart.x)
+      const h = Math.abs(containerDragCurrent.y - containerDragStart.y)
+      if (w >= 30 && h >= 30) {
+        onAddContainer(x, y, Math.max(w, MIN_CONTAINER_W), Math.max(h, MIN_CONTAINER_H))
+      }
+      setContainerDragStart(null)
+      setContainerDragCurrent(null)
+      onFinishCreatingContainer()
+      return
+    }
+
+    // Container resize end
+    if (resizingContainer) {
+      setResizingContainer(null)
+      setResizeStart(null)
+      return
+    }
+
+    // Container move end
+    if (draggingContainer) {
+      setDraggingContainer(null)
+      return
+    }
+
     // Commit endpoint drag
     if (draggingEndpoint && endpointPreview) {
       const { edgeId, which } = draggingEndpoint
@@ -245,10 +384,32 @@ export default function DiagramCanvas({
       }
       setDragConnecting(false)
     }
+
+    // Node drag end: update containerId based on node center position
+    if (dragging) {
+      const node = nodes.find(n => n.id === dragging)
+      if (node) {
+        const cx = node.x + node.width / 2
+        const cy = node.y + node.height / 2
+        let newContainerId = null
+        for (const c of containers) {
+          if (cx >= c.x && cx <= c.x + c.width && cy >= c.y && cy <= c.y + c.height) {
+            newContainerId = c.id
+            break
+          }
+        }
+        if (node.containerId !== newContainerId) {
+          onUpdateNode(dragging, { containerId: newContainerId })
+        }
+      }
+    }
+
     setDragging(null)
     setIsPanning(false)
   }, [draggingEndpoint, endpointPreview, onUpdateEdge, dragConnecting, isConnecting,
-      connectingFrom, nodes, getSVGPoint, onCompleteConnect, onDeselectAll])
+      connectingFrom, nodes, getSVGPoint, onCompleteConnect, onDeselectAll,
+      containerDragStart, containerDragCurrent, creatingContainer, onAddContainer, onFinishCreatingContainer,
+      draggingContainer, resizingContainer, dragging, containers, onUpdateNode])
 
   useEffect(() => {
     window.addEventListener('mouseup', handleMouseUp)
@@ -261,10 +422,29 @@ export default function DiagramCanvas({
   const selectedEdgeData = selectedEdge ? edges.find(e => e.id === selectedEdge) : null
   const selectedRoute = selectedEdge ? routes[selectedEdge] : null
 
+  // Compute container creation preview rect
+  let previewRect = null
+  if (containerDragStart && containerDragCurrent && creatingContainer) {
+    const x = Math.min(containerDragStart.x, containerDragCurrent.x)
+    const y = Math.min(containerDragStart.y, containerDragCurrent.y)
+    const w = Math.abs(containerDragCurrent.x - containerDragStart.x)
+    const h = Math.abs(containerDragCurrent.y - containerDragStart.y)
+    previewRect = { x, y, width: w, height: h }
+  }
+
+  // Resize handle positions for selected container
+  const selContainer = selectedContainer ? containers.find(c => c.id === selectedContainer) : null
+  const resizeHandles = selContainer ? getResizeHandles(selContainer) : []
+
+  // Canvas hint text
+  const hintText = creatingContainer
+    ? 'Click and drag on the canvas to draw a container. Press Escape to cancel.'
+    : 'Double-click to add a node. Drag from a port to connect. Drag edge endpoints to reposition.'
+
   return (
     <div className="canvas-container">
       <div className="canvas-hint">
-        Double-click to add a node. Drag from a port to connect. Drag edge endpoints to reposition.
+        {hintText}
       </div>
       <svg
         ref={svgRef}
@@ -272,6 +452,7 @@ export default function DiagramCanvas({
         onMouseDown={handleCanvasMouseDown}
         onDoubleClick={handleCanvasDoubleClick}
         onMouseMove={handleMouseMove}
+        style={creatingContainer ? { cursor: 'crosshair' } : undefined}
       >
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -290,6 +471,53 @@ export default function DiagramCanvas({
             x="-5000" y="-5000" width="10000" height="10000"
             fill="transparent"
           />
+
+          {/* Containers — rendered behind everything else */}
+          {containers.map(container => {
+            const isSelected = selectedContainer === container.id
+            const bw = container.borderWidth === 'thin' ? 1 : container.borderWidth === 'thick' ? 3 : 1.5
+            const fillColor = container.fillColor || 'rgba(148, 163, 184, 0.06)'
+            const strokeColor = isSelected ? '#60a5fa' : (container.borderColor || '#475569')
+            return (
+              <g key={container.id}>
+                <rect
+                  x={container.x}
+                  y={container.y}
+                  width={container.width}
+                  height={container.height}
+                  rx="8"
+                  ry="8"
+                  className={`container-shape ${isSelected ? 'selected' : ''}`}
+                  style={{
+                    fill: fillColor,
+                    stroke: strokeColor,
+                    strokeWidth: isSelected ? bw + 1.5 : bw,
+                    strokeDasharray: isSelected ? 'none' : '6 3',
+                  }}
+                  onMouseDown={(e) => handleContainerMouseDown(e, container.id)}
+                  cursor={creatingContainer ? 'crosshair' : 'grab'}
+                />
+                <ContainerLabel container={container} isSelected={isSelected} />
+              </g>
+            )
+          })}
+
+          {/* Container creation preview */}
+          {previewRect && (
+            <rect
+              x={previewRect.x}
+              y={previewRect.y}
+              width={previewRect.width}
+              height={previewRect.height}
+              rx="8"
+              ry="8"
+              fill="rgba(96, 165, 250, 0.08)"
+              stroke="#60a5fa"
+              strokeWidth="2"
+              strokeDasharray="6 3"
+              style={{ pointerEvents: 'none' }}
+            />
+          )}
 
           {/* Edges — orthogonal polylines */}
           {edges.map(edge => {
@@ -533,10 +761,102 @@ export default function DiagramCanvas({
               </g>
             )
           })}
+
+          {/* Resize handles on selected container (rendered on top of everything) */}
+          {resizeHandles.map(h => (
+            <rect
+              key={h.handle}
+              x={h.x - 4}
+              y={h.y - 4}
+              width={8}
+              height={8}
+              className="container-resize-handle"
+              style={{ cursor: h.cursor }}
+              onMouseDown={(e) => handleResizeMouseDown(e, selContainer.id, h.handle)}
+            />
+          ))}
         </g>
       </svg>
     </div>
   )
+}
+
+// ── Container label sub-component ─────────────────────────────
+
+function ContainerLabel({ container, isSelected }) {
+  const { textPosition, label } = container
+  const fill = isSelected ? '#60a5fa' : '#94a3b8'
+
+  if (textPosition === 'bottom') {
+    return (
+      <text
+        x={container.x + container.width / 2}
+        y={container.y + container.height - 10}
+        textAnchor="middle"
+        className="container-label"
+        fill={fill}
+      >
+        {label}
+      </text>
+    )
+  }
+  if (textPosition === 'left') {
+    return (
+      <text
+        x={container.x + 10}
+        y={container.y + container.height / 2}
+        textAnchor="middle"
+        className="container-label"
+        fill={fill}
+        transform={`rotate(-90, ${container.x + 10}, ${container.y + container.height / 2})`}
+      >
+        {label}
+      </text>
+    )
+  }
+  if (textPosition === 'right') {
+    return (
+      <text
+        x={container.x + container.width - 10}
+        y={container.y + container.height / 2}
+        textAnchor="middle"
+        className="container-label"
+        fill={fill}
+        transform={`rotate(90, ${container.x + container.width - 10}, ${container.y + container.height / 2})`}
+      >
+        {label}
+      </text>
+    )
+  }
+  // Default: top
+  return (
+    <text
+      x={container.x + container.width / 2}
+      y={container.y + 18}
+      textAnchor="middle"
+      className="container-label"
+      fill={fill}
+    >
+      {label}
+    </text>
+  )
+}
+
+// ── Resize handle positions ───────────────────────────────────
+
+function getResizeHandles(c) {
+  const mx = c.x + c.width / 2
+  const my = c.y + c.height / 2
+  return [
+    { handle: 'tl', x: c.x, y: c.y, cursor: 'nwse-resize' },
+    { handle: 't',  x: mx, y: c.y, cursor: 'ns-resize' },
+    { handle: 'tr', x: c.x + c.width, y: c.y, cursor: 'nesw-resize' },
+    { handle: 'l',  x: c.x, y: my, cursor: 'ew-resize' },
+    { handle: 'r',  x: c.x + c.width, y: my, cursor: 'ew-resize' },
+    { handle: 'bl', x: c.x, y: c.y + c.height, cursor: 'nesw-resize' },
+    { handle: 'b',  x: mx, y: c.y + c.height, cursor: 'ns-resize' },
+    { handle: 'br', x: c.x + c.width, y: c.y + c.height, cursor: 'nwse-resize' },
+  ]
 }
 
 // ── Endpoint handle sub-component ────────────────────────────

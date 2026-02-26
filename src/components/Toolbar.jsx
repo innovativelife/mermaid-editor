@@ -51,20 +51,32 @@ const BORDER_WIDTHS = [
   { value: 'thick', label: 'Thick' },
 ]
 
+const TEXT_POSITIONS = [
+  { value: 'top', label: 'Top' },
+  { value: 'bottom', label: 'Bottom' },
+  { value: 'left', label: 'Left' },
+  { value: 'right', label: 'Right' },
+]
+
 export default function Toolbar({
-  selectedNode, selectedEdge,
+  selectedNode, selectedEdge, selectedContainer,
   onUpdateNode, onDeleteNode,
   onUpdateEdge, onDeleteEdge,
+  onUpdateContainer, onDeleteContainer,
   connectingFrom, onCancelConnect,
+  creatingContainer, onToggleCreatingContainer,
 }) {
   const [editingLabel, setEditingLabel] = useState(null)
   const [editingEdgeLabel, setEditingEdgeLabel] = useState(null)
+  const [editingContainerLabel, setEditingContainerLabel] = useState(null)
   const [customW, setCustomW] = useState('')
   const [customH, setCustomH] = useState('')
   const nodeLabelRef = useRef(null)
   const edgeLabelRef = useRef(null)
+  const containerLabelRef = useRef(null)
   const prevNodeId = useRef(null)
   const prevEdgeId = useRef(null)
+  const prevContainerId = useRef(null)
 
   // Auto-focus node label input when a new node is selected
   useEffect(() => {
@@ -94,6 +106,33 @@ export default function Toolbar({
     }
   }, [selectedEdge])
 
+  // Auto-focus container label input when a new container is selected
+  useEffect(() => {
+    if (selectedContainer && selectedContainer.id !== prevContainerId.current) {
+      prevContainerId.current = selectedContainer.id
+      setEditingContainerLabel(selectedContainer.label)
+      requestAnimationFrame(() => {
+        containerLabelRef.current?.focus()
+        containerLabelRef.current?.select()
+      })
+    } else if (!selectedContainer) {
+      prevContainerId.current = null
+    }
+  }, [selectedContainer])
+
+  // Delete/Backspace key deletes selected container
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't delete when typing in an input
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedContainer) {
+        onDeleteContainer()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [selectedContainer, onDeleteContainer])
+
   const commitNodeLabel = () => {
     if (editingLabel !== null) {
       onUpdateNode({ label: editingLabel || selectedNode?.id || 'Node' })
@@ -114,6 +153,17 @@ export default function Toolbar({
 
   const handleEdgeLabelKey = (e) => {
     if (e.key === 'Enter') commitEdgeLabel()
+  }
+
+  const commitContainerLabel = () => {
+    if (editingContainerLabel !== null) {
+      onUpdateContainer({ label: editingContainerLabel || 'Group' })
+    }
+    setEditingContainerLabel(null)
+  }
+
+  const handleContainerLabelKey = (e) => {
+    if (e.key === 'Enter') commitContainerLabel()
   }
 
   const handleSizeChange = (presetValue) => {
@@ -141,6 +191,15 @@ export default function Toolbar({
 
   return (
     <div className="toolbar">
+      <div className="toolbar-section">
+        <button
+          className={`btn btn-container ${creatingContainer ? 'active' : ''}`}
+          onClick={onToggleCreatingContainer}
+        >
+          + Add Container
+        </button>
+      </div>
+
       <div className="toolbar-section">
         <h3>Instructions</h3>
         <ul className="instructions">
@@ -319,9 +378,83 @@ export default function Toolbar({
         </div>
       )}
 
-      {!selectedNode && !selectedEdge && !connectingFrom && (
+      {selectedContainer && (
         <div className="toolbar-section">
-          <p className="muted">Select a node or edge to edit its properties.</p>
+          <h3>Container: {selectedContainer.id}</h3>
+          <label>
+            Label:
+            <input
+              ref={containerLabelRef}
+              type="text"
+              value={editingContainerLabel !== null ? editingContainerLabel : selectedContainer.label}
+              onFocus={() => setEditingContainerLabel(selectedContainer.label)}
+              onChange={e => setEditingContainerLabel(e.target.value)}
+              onBlur={commitContainerLabel}
+              onKeyDown={handleContainerLabelKey}
+            />
+          </label>
+          <label>
+            Text Position:
+            <select
+              value={selectedContainer.textPosition || 'top'}
+              onChange={e => onUpdateContainer({ textPosition: e.target.value })}
+            >
+              {TEXT_POSITIONS.map(p => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Fill:
+            <div className="color-swatches">
+              {FILL_COLORS.map(c => (
+                <button
+                  key={c.label}
+                  className={`swatch ${(selectedContainer.fillColor || null) === c.value ? 'active' : ''}`}
+                  style={{ background: c.css || 'rgba(148, 163, 184, 0.06)', borderColor: c.value === null ? 'var(--text-muted)' : c.css }}
+                  title={c.label}
+                  onClick={() => onUpdateContainer({ fillColor: c.value })}
+                />
+              ))}
+            </div>
+          </label>
+          <label>
+            Border:
+            <div className="color-swatches">
+              {BORDER_COLORS.map(c => (
+                <button
+                  key={c.label}
+                  className={`swatch ${(selectedContainer.borderColor || null) === c.value ? 'active' : ''}`}
+                  style={{ background: c.css || '#475569', borderColor: c.value === null ? 'var(--text-muted)' : c.css }}
+                  title={c.label}
+                  onClick={() => onUpdateContainer({ borderColor: c.value })}
+                />
+              ))}
+            </div>
+          </label>
+          <label>
+            Border Width:
+            <div className="border-width-btns">
+              {BORDER_WIDTHS.map(w => (
+                <button
+                  key={w.value}
+                  className={`btn btn-sm ${(selectedContainer.borderWidth || 'medium') === w.value ? 'btn-primary' : ''}`}
+                  onClick={() => onUpdateContainer({ borderWidth: w.value })}
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+          </label>
+          <div className="toolbar-actions">
+            <button className="btn btn-delete" onClick={onDeleteContainer}>Delete</button>
+          </div>
+        </div>
+      )}
+
+      {!selectedNode && !selectedEdge && !selectedContainer && !connectingFrom && (
+        <div className="toolbar-section">
+          <p className="muted">Select a node, edge, or container to edit its properties.</p>
         </div>
       )}
     </div>
